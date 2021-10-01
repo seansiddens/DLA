@@ -17,6 +17,9 @@
 #define WORK_GRP_SIZE 16
 #define NUM_PARTICLES WORK_GRP_SIZE * 32000
 
+//TODO: Rendering a higher/lower resolution texture to the window
+//TODO: GUI stuff - cluster drawing color, clearing of the screen, reset simulation, particle count, etc.
+
 
 // Struct definition for a random walker
 struct Walker {
@@ -27,13 +30,13 @@ struct color {
     float r, g, b;
 };
 
+
 void put_seed(float *image, int x, int y, float r, float g, float b) {
     int i = y * WINDOW_WIDTH * 4 + x * 4;
     image[i] = r;
     image[i+1] = g;
     image[i+2] = b;
     image[i+3] = 1.0;
-    return;
 }
 
 
@@ -44,12 +47,13 @@ float random_uniform() {
     return (float) random() / (float) ((long int) RAND_MAX + 1);
 }
 
+
 //
 // Simple GUI overlay for displaying program metrics and parameters.
 // bool *p_open: Flag whether to display or not.
 // double frameTime: Time (in ms) between frames.
 //
-static void metricsOverlay(bool* p_open, double frameTime, unsigned int frame)
+static void debugOverlay(bool* p_open, double frameTime, unsigned int frame)
 {
     static int corner = 0;
     ImGuiIO& io = ImGui::GetIO();
@@ -75,19 +79,13 @@ static void metricsOverlay(bool* p_open, double frameTime, unsigned int frame)
         ImGui::Text("%.2f ms/frame \n%d FPS", frameTime, (int)(1000.0 / frameTime));
         ImGui::Text("Frame: %u", frame);
         ImGui::Separator();
-        ImGui::Text("# of particles: %d", NUM_PARTICLES);
-        if (ImGui::BeginPopupContextWindow())
-        {
-            if (ImGui::MenuItem("Custom",       NULL, corner == -1)) corner = -1;
-            if (ImGui::MenuItem("Top-left",     NULL, corner == 0)) corner = 0;
-            if (ImGui::MenuItem("Top-right",    NULL, corner == 1)) corner = 1;
-            if (ImGui::MenuItem("Bottom-left",  NULL, corner == 2)) corner = 2;
-            if (ImGui::MenuItem("Bottom-right", NULL, corner == 3)) corner = 3;
-            if (p_open && ImGui::MenuItem("Close")) *p_open = false;
-            ImGui::EndPopup();
-        }
+        ImGui::Text("# of walkers: %d", NUM_PARTICLES);
     }
     ImGui::End();
+}
+
+void clear_texture(float *tex, int width, int height, int channels) {
+    memset(tex, 0, width * height * channels * sizeof(float));
 }
 
 int main() {
@@ -167,8 +165,6 @@ int main() {
     // The normal vert + frag shader for displaying to quad
     Shader quadProgram("../vert.glsl", "../frag.glsl");
 
-    ComputeShader displayProgram("../display.glsl");
-
     // Compute shader which updates random walkers and writes to the texture
     ComputeShader computeProgram("../compute.glsl");
     computeProgram.use();
@@ -203,7 +199,7 @@ int main() {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
     // Position attribute
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) nullptr);
     glEnableVertexAttribArray(0);
     // Tex coord attribute
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) (3 * sizeof(float)));
@@ -213,10 +209,10 @@ int main() {
     GLuint walkerSSBO;
     glGenBuffers(1, &walkerSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, walkerSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(struct Walker), NULL, GL_STATIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(struct Walker), nullptr, GL_STATIC_DRAW);
     // Map data store to CPU address space, allowing us to directly write to it
     GLint bufMask = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
-    struct Walker *walkers = (struct Walker *) glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+    auto walkers = (struct Walker *) glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
                                                          NUM_PARTICLES * sizeof(struct Walker),
                                                          bufMask);
     // Initialize with random positions
@@ -224,8 +220,11 @@ int main() {
         walkers[i].x = (int) (random_uniform() * WINDOW_WIDTH);
         walkers[i].y = (int) (random_uniform() * WINDOW_HEIGHT);
         walkers[i].state = 1;
-//        std::cout << "i: " << i << " (" << points[i].x << ", " << points[i].y << ")" << std::endl;
     }
+
+    auto originalWalkers = (struct Walker *) malloc(NUM_PARTICLES * sizeof(struct Walker));
+    memcpy(originalWalkers, walkers, NUM_PARTICLES * sizeof(struct  Walker));
+
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, walkerSSBO);
@@ -241,15 +240,7 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
-    float *tex_data = (float *) malloc((WINDOW_WIDTH * WINDOW_HEIGHT * 4) * sizeof(float));
-//    for (int i = 0; i < WINDOW_WIDTH * WINDOW_HEIGHT * 4; i += 4) {
-//        if (i == ((WINDOW_WIDTH * WINDOW_HEIGHT * 4 / 2)) + (int)(WINDOW_WIDTH * 4 / 2)) {
-//            tex_data[i] = 1.0;
-//            tex_data[i+1] = 1.0;
-//            tex_data[i+2] = 1.0;
-//            tex_data[i+3] = 1.0;
-//        }
-//    }
+    auto tex_data = (float *) malloc((WINDOW_WIDTH * WINDOW_HEIGHT * 4) * sizeof(float));
 
     put_seed(tex_data, 300, 200, 1, 0, 0);
     put_seed(tex_data, 200, 400, 0, 1, 0);
@@ -265,8 +256,8 @@ int main() {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
     // MAIN RENDER LOOP
-    bool startWalkers = false;
-    bool showMetrics = true;
+    bool updateWalkers = false; // Flag to determine whether to update the walkers every frame
+    bool showMetrics = true;    // Show the debug overlay or not
     bool shouldLoop = true;
     uint64_t performanceFreq = SDL_GetPerformanceFrequency();
     double deltaTime;
@@ -307,15 +298,34 @@ int main() {
                             shouldLoop = false;
                             break;
                         case SDLK_RETURN:
-                            startWalkers = true;
+                            updateWalkers = !updateWalkers;
                             break;
                         case SDLK_d:
                             showMetrics = !showMetrics;
                             break;
+                        case SDLK_r:
+                            // Reset texture and walkers
+                            clear_texture(tex_data, WINDOW_WIDTH, WINDOW_HEIGHT, 4);
+                            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, WINDOW_WIDTH, WINDOW_HEIGHT, 0, GL_RGBA, GL_FLOAT,
+                                         tex_data);
+                            glBindImageTexture(0, tex_output, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+                            memcpy(walkers, originalWalkers, NUM_PARTICLES * sizeof(struct Walker));
+                            glBindBuffer(GL_SHADER_STORAGE_BUFFER, walkerSSBO);
+                            glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(struct Walker), walkers, GL_STATIC_DRAW);
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, walkerSSBO);
+
+                            if (updateWalkers) {
+                                updateWalkers = false;
+                            }
+                            break;
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-//                    mouseDown = true;
+                    if (updateWalkers) {
+                        updateWalkers = false;
+                    }
+                    mouseDown = true;
                     break;
                 case SDL_MOUSEBUTTONUP:
                     mouseDown = false;
@@ -340,12 +350,12 @@ int main() {
 
         if (showMetrics) {
             // Draw metrics overlay
-            metricsOverlay(&showMetrics, deltaTime, frame);
+            debugOverlay(&showMetrics, deltaTime, frame);
         }
 
 
         // Launch compute shaders
-        if (startWalkers) {
+        if (updateWalkers) {
             computeProgram.use();
             computeProgram.uniform1ui("u_frame", frame);
             computeProgram.uniform1ui("u_window_width", WINDOW_WIDTH);
@@ -367,7 +377,7 @@ int main() {
         quadProgram.use();
         glBindVertexArray(quadVAO);
         glBindTexture(GL_TEXTURE_2D, tex_output);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
 
         // Render GUI
